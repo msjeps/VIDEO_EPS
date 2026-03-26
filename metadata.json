@@ -1,0 +1,7 @@
+{
+  "name": "EPS et VIDEO",
+  "description": "Outil d'analyse vidéo pour l'EPS : enregistrement, comparaison et annotations en local.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}

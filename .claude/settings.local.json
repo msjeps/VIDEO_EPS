@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls -lad /Users/nathalieprenois/AndroidStudioProjects/EPSet*)",
+      "Bash(cp \"/Users/nathalieprenois/AndroidStudioProjects/EPSetVIDEO /icon_192.png\" \"/Users/nathalieprenois/AndroidStudioProjects/EPSetVIDEO /public/icon_192.png\")",
+      "Bash(cp \"/Users/nathalieprenois/AndroidStudioProjects/EPSetVIDEO /icon_512.png\" \"/Users/nathalieprenois/AndroidStudioProjects/EPSetVIDEO /public/icon_512.png\")",
+      "Bash(sips -g pixelWidth -g pixelHeight \"/Users/nathalieprenois/AndroidStudioProjects/EPSetVIDEO /icon_192.png\")",
+      "Bash(sips -g pixelWidth -g pixelHeight \"/Users/nathalieprenois/AndroidStudioProjects/EPSetVIDEO /icon_512.png\")",
+      "Bash(npm run:*)",
+      "Bash(npx tsc:*)",
+      "Bash(node_modules/.bin/tsc --noEmit)",
+      "Bash(xxd \"/Users/nathalieprenois/AndroidStudioProjects/EPSetVIDEO /vite.config.ts\")",
+      "Bash(GITHUB_PAGES=true npm run build)"
+    ]
+  }
+}
