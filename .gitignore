@@ -1,0 +1,21 @@
+# Secrets & clés — ne jamais committer
+.env
+.env.*
+*.jks
+*.keystore
+*.p12
+*.pem
+keystore.properties
+local.properties
+google-services.json
+
+# Système
+.DS_Store
+Thumbs.db
+
+# Outils de dev
+node_modules/
+dist/
+build/
+.claude/
+CLAUDE.md
