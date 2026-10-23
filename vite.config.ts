@@ -8,7 +8,7 @@ export default defineConfig(({mode}) => {
 
   // GitHub Pages : GITHUB_PAGES=true npm run build
   // Local : npm run build (ou npm run dev)
-  const base = process.env.GITHUB_PAGES ? '/EPSetVIDEO/' : '/';
+  const base = process.env.GITHUB_PAGES ? '/VIDEO_EPS/' : '/';
 
   return {
     base,

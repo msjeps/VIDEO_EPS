@@ -10,7 +10,6 @@ import {
   Share2,
   Mic,
   MicOff,
-  Timer,
   Pencil,
   ArrowRight,
   Circle as CircleIcon,
@@ -56,15 +55,20 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({ id, title, settings, o
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [currentVideoId, setCurrentVideoId] = useState<string | null>(null);
   const [showExportMenu, setShowExportMenu] = useState(false);
+  const [isScrubbing, setIsScrubbing] = useState(false);
 
   const videoRef = useRef<HTMLVideoElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const rafRef = useRef<number | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const audioStreamRef = useRef<MediaStream | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const containerRef = useRef<HTMLDivElement>(null);
   const progressRef = useRef<HTMLDivElement>(null);
-  const animFrameRef = useRef<number>(0);
+
+  // Sur Android (PowerVR GE8320), on contourne le bug GPU via canvas
+  const isAndroid = /android/i.test(navigator.userAgent);
 
   useEffect(() => {
     const updateDimensions = () => {
@@ -83,40 +87,39 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({ id, title, settings, o
 
   const safePlay = async (video: HTMLVideoElement | null) => {
     if (!video) return;
-    try {
-      await video.play();
-    } catch (err: any) {
-      if (err.name !== 'AbortError') {
-        console.error("Video play error:", err);
-      }
+    try { await video.play(); } catch (err: any) {
+      if (err.name !== 'AbortError') console.error("Video play error:", err);
     }
   };
 
-  // Progress bar update loop
-  const updateProgress = useCallback(() => {
-    if (videoRef.current && !videoRef.current.paused) {
-      setProgress(videoRef.current.currentTime);
-      animFrameRef.current = requestAnimationFrame(updateProgress);
-    }
-  }, []);
+  // Progress is now driven by onTimeUpdate on the video element
 
-  useEffect(() => {
-    if (isPlaying) {
-      animFrameRef.current = requestAnimationFrame(updateProgress);
-    }
-    return () => cancelAnimationFrame(animFrameRef.current);
-  }, [isPlaying, updateProgress]);
+  // Permissions déjà accordées ? Évite de re-demander sur Android WebView
+  const permissionGrantedRef = useRef(false);
 
   const startCamera = async () => {
     try {
+      const isAndroidApp = !!(window as any).Capacitor?.isNativePlatform?.();
+      const videoConstraints = isAndroidApp
+        ? { facingMode: 'environment', width: { ideal: 640 }, height: { ideal: 480 } }
+        : { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } };
+
+      // Premier appel : demander vidéo + audio ensemble (une seule popup de permission)
+      // Appels suivants : demander seulement la vidéo (permission déjà accordée)
+      const needAudio = settings.enableAudio && !permissionGrantedRef.current;
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          facingMode: 'environment',
-          width: { ideal: 1920 },
-          height: { ideal: 1080 }
-        },
-        audio: false
+        video: videoConstraints,
+        audio: needAudio
       });
+      permissionGrantedRef.current = true;
+
+      if (needAudio) {
+        const audioTracks = stream.getAudioTracks();
+        if (audioTracks.length > 0) {
+          audioStreamRef.current = new MediaStream(audioTracks);
+          audioTracks.forEach(t => stream.removeTrack(t));
+        }
+      }
       streamRef.current = stream;
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
@@ -130,366 +133,312 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({ id, title, settings, o
   };
 
   const stopCamera = () => {
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach(track => track.stop());
-      streamRef.current = null;
+    streamRef.current?.getTracks().forEach(t => t.stop());
+    streamRef.current = null;
+    audioStreamRef.current?.getTracks().forEach(t => t.stop());
+    audioStreamRef.current = null;
+    if (videoRef.current) videoRef.current.srcObject = null;
+  };
+
+  const getSupportedMimeType = () => {
+    const isAndroid = /android/i.test(navigator.userAgent);
+    // Sur Android : VP8 fonctionne bien. Sur Mac/desktop : VP9 ou H.264 évitent l'effet kaléidoscope VP8
+    const types = isAndroid
+      ? ['video/webm;codecs=vp8,opus', 'video/webm;codecs=vp8', 'video/webm']
+      : ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp9', 'video/mp4;codecs=avc1', 'video/mp4', 'video/webm;codecs=vp8,opus', 'video/webm'];
+    for (const type of types) {
+      if (MediaRecorder.isTypeSupported(type)) return type;
     }
-    if (audioStreamRef.current) {
-      audioStreamRef.current.getTracks().forEach(track => track.stop());
-      audioStreamRef.current = null;
-    }
-    if (videoRef.current) {
-      videoRef.current.srcObject = null;
-    }
+    return '';
   };
 
   const startRecording = async () => {
     if (!streamRef.current) return;
-
-    // Build combined stream: video + optional audio mic
     const combinedStream = new MediaStream();
     streamRef.current.getVideoTracks().forEach(t => combinedStream.addTrack(t));
-
     if (settings.enableAudio) {
-      try {
-        const audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        audioStreamRef.current = audioStream;
-        audioStream.getAudioTracks().forEach(t => combinedStream.addTrack(t));
-      } catch (err) {
-        console.warn("Micro non disponible, enregistrement sans audio:", err);
+      if (audioStreamRef.current && audioStreamRef.current.getAudioTracks().some(t => t.readyState === 'live')) {
+        audioStreamRef.current.getAudioTracks().forEach(t => combinedStream.addTrack(t));
+      } else {
+        try {
+          const audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          audioStreamRef.current = audioStream;
+          audioStream.getAudioTracks().forEach(t => combinedStream.addTrack(t));
+        } catch (err) { console.warn("Micro non disponible:", err); }
       }
     }
-
     chunksRef.current = [];
-    const recorder = new MediaRecorder(combinedStream, { mimeType: 'video/webm' });
+    const mimeType = getSupportedMimeType();
+    const recorderOptions: MediaRecorderOptions = {};
+    if (mimeType) recorderOptions.mimeType = mimeType;
+    // Sur Android (tablettes Lenovo), 1 Mbps évite les saccades au décodage VP8
+    // Sur desktop/iOS, 2.5 Mbps pour une meilleure qualité
+    const isAndroid = /android/i.test(navigator.userAgent);
+    recorderOptions.videoBitsPerSecond = isAndroid ? 1000000 : 2500000;
+    const recorder = new MediaRecorder(combinedStream, recorderOptions);
+    const actualMime = recorder.mimeType || mimeType || 'video/webm';
     mediaRecorderRef.current = recorder;
-
-    recorder.ondataavailable = (e) => {
-      if (e.data.size > 0) chunksRef.current.push(e.data);
-    };
-
+    recorder.ondataavailable = (e) => { if (e.data.size > 0) chunksRef.current.push(e.data); };
     recorder.onstop = () => {
-      const blob = new Blob(chunksRef.current, { type: 'video/webm' });
+      const blob = new Blob(chunksRef.current, { type: actualMime });
       const url = URL.createObjectURL(blob);
-      setVideoUrl(url);
-      setVideoBlobRef(blob);
-      setMode('review');
-      stopCamera();
-
-      // Save to IndexedDB
+      setVideoUrl(url); setVideoBlobRef(blob); setMode('review'); stopCamera();
       const videoId = `video_${Date.now()}`;
       setCurrentVideoId(videoId);
-      const record: VideoRecord = {
-        id: videoId,
-        blob,
-        name: `${title} - ${new Date().toLocaleTimeString('fr-FR')}`,
-        createdAt: Date.now(),
-      };
-      saveVideo(record).catch(console.error);
-
-      // Auto-playback
+      saveVideo({ id: videoId, blob, name: `${title} - ${new Date().toLocaleTimeString('fr-FR')}`, createdAt: Date.now() }).catch(console.error);
       if (settings.autoPlayback) {
         setTimeout(async () => {
           if (videoRef.current) {
-            videoRef.current.srcObject = null;
-            videoRef.current.src = url;
+            videoRef.current.srcObject = null; videoRef.current.src = url;
             videoRef.current.playbackRate = playbackSpeed;
-            await safePlay(videoRef.current);
-            setIsPlaying(true);
+            await safePlay(videoRef.current); setIsPlaying(true);
           }
         }, settings.playbackDelay * 1000);
-      } else {
-        if (videoRef.current) {
-          videoRef.current.srcObject = null;
-          videoRef.current.src = url;
-        }
+      } else if (videoRef.current) {
+        videoRef.current.srcObject = null; videoRef.current.src = url;
       }
     };
-
-    recorder.start();
-    setMode('recording');
+    recorder.start(1000); setMode('recording');
   };
 
   const handleStartCapture = () => {
     if (settings.recordDelay > 0) {
-      setIsCountingDown(true);
-      setCountdown(settings.recordDelay);
+      setIsCountingDown(true); setCountdown(settings.recordDelay);
       const timer = setInterval(() => {
         setCountdown(prev => {
-          if (prev <= 1) {
-            clearInterval(timer);
-            setIsCountingDown(false);
-            startRecording();
-            return 0;
-          }
+          if (prev <= 1) { clearInterval(timer); setIsCountingDown(false); startRecording(); return 0; }
           return prev - 1;
         });
       }, 1000);
-    } else {
-      startRecording();
-    }
+    } else { startRecording(); }
   };
 
   const stopRecording = () => {
-    if (mediaRecorderRef.current && mode === 'recording') {
-      mediaRecorderRef.current.stop();
-    }
+    if (mediaRecorderRef.current && mode === 'recording') mediaRecorderRef.current.stop();
   };
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file) {
-      const url = URL.createObjectURL(file);
-      setVideoUrl(url);
-      setVideoBlobRef(file);
-      setMode('review');
-      stopCamera();
-
-      const videoId = `video_${Date.now()}`;
-      setCurrentVideoId(videoId);
-      const record: VideoRecord = {
-        id: videoId,
-        blob: file,
-        name: file.name,
-        createdAt: Date.now(),
-      };
-      saveVideo(record).catch(console.error);
-
-      if (videoRef.current) {
-        videoRef.current.srcObject = null;
-        videoRef.current.src = url;
-      }
-    }
+    if (!file) return;
+    const url = URL.createObjectURL(file);
+    setVideoUrl(url); setVideoBlobRef(file); setMode('review'); stopCamera();
+    const videoId = `video_${Date.now()}`;
+    setCurrentVideoId(videoId);
+    saveVideo({ id: videoId, blob: file, name: file.name, createdAt: Date.now() }).catch(console.error);
+    if (videoRef.current) { videoRef.current.srcObject = null; videoRef.current.src = url; }
   };
 
-  const getVideoFileName = () => {
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-    return `VideoEPS_${timestamp}.webm`;
-  };
+  const getVideoFileName = () => `VideoEPS_${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)}.webm`;
+  const getVideoFile = () => videoBlobRef ? new File([videoBlobRef], getVideoFileName(), { type: 'video/webm' }) : null;
 
-  const getVideoFile = () => {
-    if (!videoBlobRef) return null;
-    return new File([videoBlobRef], getVideoFileName(), { type: 'video/webm' });
-  };
-
-  // "Enregistrer sous..." — File System Access API (choix du dossier : local, Google Drive, etc.)
-  // Fallback sur download classique si l'API n'est pas disponible (Firefox, Safari ancien)
   const saveToFolder = async () => {
     if (!videoBlobRef) return;
-
     if ('showSaveFilePicker' in window) {
       try {
         const handle = await (window as any).showSaveFilePicker({
           suggestedName: getVideoFileName(),
-          types: [
-            {
-              description: 'Vidéo WebM',
-              accept: { 'video/webm': ['.webm'] },
-            },
-          ],
+          types: [{ description: 'Vidéo WebM', accept: { 'video/webm': ['.webm'] } }],
         });
         const writable = await handle.createWritable();
-        await writable.write(videoBlobRef);
-        await writable.close();
-        return;
-      } catch (err: any) {
-        if (err.name === 'AbortError') return; // L'utilisateur a annulé
-      }
+        await writable.write(videoBlobRef); await writable.close(); return;
+      } catch (err: any) { if (err.name === 'AbortError') return; }
     }
-
-    // Fallback: download classique
     const url = URL.createObjectURL(videoBlobRef);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = getVideoFileName();
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    const a = document.createElement('a'); a.href = url; a.download = getVideoFileName();
+    document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
   };
 
-  // Partage natif (AirDrop, Drive sur Android, WhatsApp, etc.)
   const shareVideo = async () => {
     const file = getVideoFile();
     if (!file) return;
-
     if (navigator.share && navigator.canShare?.({ files: [file] })) {
-      try {
-        await navigator.share({
-          title: 'Video EPS',
-          text: 'Vidéo d\'analyse EPS',
-          files: [file],
-        });
-        return;
-      } catch (err: any) {
-        if (err.name === 'AbortError') return;
-      }
+      try { await navigator.share({ title: 'Video EPS', text: 'Vidéo d\'analyse EPS', files: [file] }); return; }
+      catch (err: any) { if (err.name === 'AbortError') return; }
     }
-    // Fallback si pas de Web Share : ouvrir Enregistrer sous
     await saveToFolder();
   };
 
   const shareByEmail = () => {
-    // Enregistrer d'abord puis ouvrir le client mail
     saveToFolder();
-    const subject = encodeURIComponent('Vidéo analyse EPS');
-    const body = encodeURIComponent('Veuillez trouver la vidéo d\'analyse EPS en pièce jointe (fichier téléchargé séparément).');
-    window.open(`mailto:?subject=${subject}&body=${body}`, '_self');
+    window.open(`mailto:?subject=${encodeURIComponent('Vidéo analyse EPS')}&body=${encodeURIComponent('Vidéo d\'analyse EPS en pièce jointe (fichier téléchargé séparément).')}`, '_self');
   };
 
-  const saveAndClear = async () => {
-    await saveToFolder();
-    await clearVideo();
-  };
+  const saveAndClear = async () => { await saveToFolder(); await clearVideo(); };
 
   const clearVideo = async () => {
-    if (currentVideoId) {
-      await deleteVideo(currentVideoId).catch(console.error);
-    }
+    if (currentVideoId) await deleteVideo(currentVideoId).catch(console.error);
     if (videoUrl) URL.revokeObjectURL(videoUrl);
-    setVideoUrl(null);
-    setVideoBlobRef(null);
-    setCurrentVideoId(null);
-    setAnnotations([]);
-    setActiveTool(null);
-    setIsPlaying(false);
-    setProgress(0);
-    setDuration(0);
-    setMode('idle');
-    setShowDeleteConfirm(false);
+    setVideoUrl(null); setVideoBlobRef(null); setCurrentVideoId(null);
+    setAnnotations([]); setActiveTool(null); setIsPlaying(false);
+    setProgress(0); setDuration(0); setMode('idle'); setShowDeleteConfirm(false);
     startCamera();
   };
 
   const togglePlay = async () => {
-    if (videoRef.current) {
-      if (videoRef.current.paused) {
-        videoRef.current.playbackRate = playbackSpeed;
-        await safePlay(videoRef.current);
-        setIsPlaying(true);
-      } else {
-        videoRef.current.pause();
-        setIsPlaying(false);
-      }
-    }
+    if (!videoRef.current) return;
+    if (videoRef.current.paused) {
+      videoRef.current.playbackRate = playbackSpeed;
+      await safePlay(videoRef.current); setIsPlaying(true);
+    } else { videoRef.current.pause(); setIsPlaying(false); }
   };
 
-  const seekRelative = (seconds: number) => {
-    if (videoRef.current) {
-      videoRef.current.currentTime = Math.max(0, Math.min(videoRef.current.duration, videoRef.current.currentTime + seconds));
-      setProgress(videoRef.current.currentTime);
-    }
+  const seekRelative = (s: number) => {
+    if (!videoRef.current) return;
+    videoRef.current.currentTime = Math.max(0, Math.min(videoRef.current.duration, videoRef.current.currentTime + s));
+    setProgress(videoRef.current.currentTime);
   };
 
-  const handleProgressClick = (e: React.MouseEvent<HTMLDivElement> | React.TouchEvent<HTMLDivElement>) => {
+  const seekFromEvent = (e: React.MouseEvent | React.TouchEvent | MouseEvent | TouchEvent) => {
     if (!progressRef.current || !videoRef.current || !duration) return;
     const rect = progressRef.current.getBoundingClientRect();
-    const clientX = 'touches' in e ? e.touches[0].clientX : e.clientX;
+    const clientX = 'touches' in e ? e.touches[0].clientX : (e as MouseEvent).clientX;
     const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
     videoRef.current.currentTime = ratio * duration;
     setProgress(videoRef.current.currentTime);
   };
 
-  useEffect(() => {
-    startCamera();
-    return () => stopCamera();
-  }, []);
-
-  useEffect(() => {
-    if (videoRef.current) {
-      videoRef.current.playbackRate = playbackSpeed;
+  const handleScrubStart = (e: React.MouseEvent<HTMLDivElement> | React.TouchEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setIsScrubbing(true);
+    if (videoRef.current && !videoRef.current.paused) {
+      videoRef.current.pause();
     }
-  }, [playbackSpeed]);
+    seekFromEvent(e);
+
+    const onMove = (ev: MouseEvent | TouchEvent) => {
+      ev.preventDefault();
+      seekFromEvent(ev);
+    };
+    const onEnd = () => {
+      setIsScrubbing(false);
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onEnd);
+      window.removeEventListener('touchmove', onMove);
+      window.removeEventListener('touchend', onEnd);
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onEnd);
+    window.addEventListener('touchmove', onMove, { passive: false });
+    window.addEventListener('touchend', onEnd);
+  };
+
+  useEffect(() => { startCamera(); return () => stopCamera(); }, []);
+  useEffect(() => { if (videoRef.current) videoRef.current.playbackRate = playbackSpeed; }, [playbackSpeed]);
+
+  // Sync dimensions canvas ↔ conteneur
+  useEffect(() => {
+    if (canvasRef.current) {
+      canvasRef.current.width = dimensions.width;
+      canvasRef.current.height = dimensions.height;
+    }
+  }, [dimensions]);
+
+  // Boucle de rendu canvas (Android review mode uniquement)
+  // Contourne le bug kaléidoscope du GPU PowerVR GE8320 en dessinant
+  // chaque frame via CPU (drawImage) au lieu du pipeline GPU WebView.
+  useEffect(() => {
+    if (mode !== 'review' || !isAndroid) {
+      if (rafRef.current !== null) { cancelAnimationFrame(rafRef.current); rafRef.current = null; }
+      return;
+    }
+    const canvas = canvasRef.current;
+    const video = videoRef.current;
+    if (!canvas || !video) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    const drawFrame = () => {
+      if (canvas.width > 0 && canvas.height > 0 && video.readyState >= 2 && video.videoWidth > 0) {
+        // createImageBitmap force la conversion YUV→RGBA sur le CPU
+        // Corrige le rendu noir et blanc de drawImage(video) sur PowerVR GE8320
+        createImageBitmap(video).then(bitmap => {
+          ctx.fillStyle = '#000';
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+          const scale = Math.min(canvas.width / bitmap.width, canvas.height / bitmap.height);
+          const dx = (canvas.width - bitmap.width * scale) / 2;
+          const dy = (canvas.height - bitmap.height * scale) / 2;
+          ctx.drawImage(bitmap, dx, dy, bitmap.width * scale, bitmap.height * scale);
+          bitmap.close();
+        }).catch(() => {
+          // Fallback si createImageBitmap non supporté
+          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        });
+      }
+      rafRef.current = requestAnimationFrame(drawFrame);
+    };
+    rafRef.current = requestAnimationFrame(drawFrame);
+    return () => { if (rafRef.current !== null) { cancelAnimationFrame(rafRef.current); rafRef.current = null; } };
+  }, [mode, isAndroid]);
 
   const formatTime = (t: number) => {
     if (!isFinite(t)) return '0:00';
-    const m = Math.floor(t / 60);
-    const s = Math.floor(t % 60);
-    return `${m}:${s.toString().padStart(2, '0')}`;
+    return `${Math.floor(t / 60)}:${Math.floor(t % 60).toString().padStart(2, '0')}`;
   };
 
   const tools: { id: Tool; icon: React.ComponentType<any>; label: string }[] = [
     { id: 'pen', icon: Pencil, label: 'Main levée' },
     { id: 'line', icon: Minus, label: 'Ligne' },
     { id: 'arrow', icon: ArrowRight, label: 'Flèche' },
-    { id: 'segment', icon: RulerIcon, label: 'Segment alignement' },
+    { id: 'segment', icon: RulerIcon, label: 'Alignement' },
     { id: 'circle', icon: CircleIcon, label: 'Cercle' },
     { id: 'rect', icon: SquareIcon, label: 'Rectangle' },
   ];
 
+  // Shared button style for modals
+  const modalBtn = "flex items-center justify-center gap-2 px-5 py-3 rounded-xl font-bold touch-manipulation min-h-[48px] text-sm sm:text-base w-full";
+
   return (
-    <div ref={containerRef} className="relative w-full h-full bg-black rounded-2xl overflow-hidden border-2 border-zinc-800 flex flex-col">
-      {/* Header */}
-      <div className="absolute top-0 left-0 right-0 z-20 p-3 md:p-4 flex justify-between items-center bg-gradient-to-b from-black/80 to-transparent">
-        <h3 className="text-base md:text-lg font-bold text-white flex items-center gap-2">
-          <div className={`w-3 h-3 rounded-full ${mode === 'recording' ? 'bg-red-500 animate-pulse' : 'bg-zinc-500'}`} />
+    <div ref={containerRef} className="relative w-full h-full bg-black rounded-xl sm:rounded-2xl overflow-hidden border border-zinc-800 sm:border-2 flex flex-col">
+      {/* Header overlay */}
+      <div className="absolute top-0 left-0 right-0 z-20 px-2 py-1.5 sm:p-3 md:p-4 flex justify-between items-center bg-gradient-to-b from-black/80 to-transparent">
+        <h3 className="text-sm sm:text-base md:text-lg font-bold text-white flex items-center gap-1.5 sm:gap-2">
+          <div className={`w-2.5 h-2.5 sm:w-3 sm:h-3 rounded-full ${mode === 'recording' ? 'bg-red-500 animate-pulse' : 'bg-zinc-500'}`} />
           {title}
         </h3>
-        <div className="flex gap-2">
+        <div className="flex gap-1 sm:gap-2">
           {mode === 'review' && (
             <>
-              <button
-                onClick={() => setShowExportMenu(true)}
-                className="p-3 bg-indigo-500/20 hover:bg-indigo-500 active:bg-indigo-600 text-indigo-400 hover:text-white rounded-full transition-colors touch-manipulation"
-                title="Exporter / Partager"
-              >
-                <Share2 size={24} />
+              <button onClick={() => setShowExportMenu(true)} className="p-2 sm:p-3 bg-indigo-500/20 active:bg-indigo-600 text-indigo-400 rounded-full touch-manipulation">
+                <Share2 size={20} />
               </button>
-              <button
-                onClick={() => setShowDeleteConfirm(true)}
-                className="p-3 bg-red-500/20 hover:bg-red-500 active:bg-red-600 text-red-500 hover:text-white rounded-full transition-colors touch-manipulation"
-                title="Supprimer"
-              >
-                <Trash2 size={24} />
+              <button onClick={() => setShowDeleteConfirm(true)} className="p-2 sm:p-3 bg-red-500/20 active:bg-red-600 text-red-500 rounded-full touch-manipulation">
+                <Trash2 size={20} />
               </button>
             </>
           )}
           {onClose && (
-            <button onClick={onClose} className="p-3 bg-zinc-800 hover:bg-zinc-700 active:bg-zinc-600 rounded-full touch-manipulation">
-              <X size={24} />
+            <button onClick={onClose} className="p-2 sm:p-3 bg-zinc-800 active:bg-zinc-600 rounded-full touch-manipulation">
+              <X size={20} />
             </button>
           )}
         </div>
       </div>
 
-      {/* Delete Confirmation Overlay */}
+      {/* Delete Confirmation */}
       <AnimatePresence>
         {showDeleteConfirm && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="absolute inset-0 z-40 bg-black/80 flex items-center justify-center p-6"
-          >
-            <div className="bg-zinc-900 rounded-2xl p-6 max-w-sm w-full space-y-5 text-center border border-zinc-700">
-              <p className="text-lg font-bold text-white">Que faire de cette vidéo ?</p>
-              <p className="text-sm text-zinc-400">Exportez, enregistrez en local ou supprimez la vidéo.</p>
-              <div className="flex flex-col gap-3">
-                <button
-                  onClick={() => { setShowDeleteConfirm(false); setShowExportMenu(true); }}
-                  className="flex items-center justify-center gap-2 px-6 py-3 bg-indigo-600 hover:bg-indigo-500 active:bg-indigo-700 text-white rounded-xl font-bold touch-manipulation min-h-[48px]"
-                >
-                  <Share2 size={22} />
-                  Exporter / Partager
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            className="absolute inset-0 z-40 bg-black/80 flex items-center justify-center p-4">
+            <div className="bg-zinc-900 rounded-2xl p-5 sm:p-6 max-w-sm w-full space-y-4 text-center border border-zinc-700">
+              <p className="text-base sm:text-lg font-bold text-white">Que faire de cette vidéo ?</p>
+              <div className="flex flex-col gap-2.5">
+                <button onClick={() => { setShowDeleteConfirm(false); setShowExportMenu(true); }} className={`${modalBtn} bg-indigo-600 active:bg-indigo-700 text-white`}>
+                  <Share2 size={20} /> Exporter / Partager
                 </button>
-                <button
-                  onClick={saveAndClear}
-                  className="flex items-center justify-center gap-2 px-6 py-3 bg-zinc-700 hover:bg-zinc-600 active:bg-zinc-800 text-white rounded-xl font-bold touch-manipulation min-h-[48px]"
-                >
-                  <Download size={22} />
-                  Enregistrer en local et fermer
+                <button onClick={saveAndClear} className={`${modalBtn} bg-zinc-700 active:bg-zinc-800 text-white`}>
+                  <Download size={20} /> Enregistrer et fermer
                 </button>
-                <button
-                  onClick={clearVideo}
-                  className="flex items-center justify-center gap-2 px-6 py-3 bg-red-600 hover:bg-red-500 active:bg-red-700 text-white rounded-xl font-bold touch-manipulation min-h-[48px]"
-                >
-                  <Trash2 size={22} />
-                  Supprimer
+                <button onClick={clearVideo} className={`${modalBtn} bg-red-600 active:bg-red-700 text-white`}>
+                  <Trash2 size={20} /> Supprimer
                 </button>
-                <button
-                  onClick={() => setShowDeleteConfirm(false)}
-                  className="px-6 py-3 bg-zinc-800 hover:bg-zinc-700 active:bg-zinc-600 text-zinc-400 rounded-xl font-bold touch-manipulation min-h-[48px]"
-                >
-                  Annuler
+                <button onClick={() => {
+                  setShowDeleteConfirm(false);
+                  if (videoRef.current) {
+                    videoRef.current.currentTime = 0;
+                    setProgress(0);
+                  }
+                }} className={`${modalBtn} bg-zinc-800 active:bg-zinc-600 text-zinc-400`}>
+                  <Play size={20} /> Revoir
                 </button>
               </div>
             </div>
@@ -497,45 +446,25 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({ id, title, settings, o
         )}
       </AnimatePresence>
 
-      {/* Export Menu Overlay */}
+      {/* Export Menu */}
       <AnimatePresence>
         {showExportMenu && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="absolute inset-0 z-40 bg-black/80 flex items-center justify-center p-6"
-          >
-            <div className="bg-zinc-900 rounded-2xl p-6 max-w-sm w-full space-y-5 text-center border border-zinc-700">
-              <Share2 size={40} className="mx-auto text-indigo-400" />
-              <p className="text-lg font-bold text-white">Exporter la vidéo</p>
-              <p className="text-sm text-zinc-400">La vidéo inclut le commentaire audio si le micro était activé.</p>
-              <div className="flex flex-col gap-3">
-                <button
-                  onClick={() => { shareVideo(); setShowExportMenu(false); }}
-                  className="flex items-center justify-center gap-2 px-6 py-3 bg-indigo-600 hover:bg-indigo-500 active:bg-indigo-700 text-white rounded-xl font-bold touch-manipulation min-h-[48px]"
-                >
-                  <Share2 size={22} />
-                  Partager (Drive, AirDrop, etc.)
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            className="absolute inset-0 z-40 bg-black/80 flex items-center justify-center p-4">
+            <div className="bg-zinc-900 rounded-2xl p-5 sm:p-6 max-w-sm w-full space-y-4 text-center border border-zinc-700">
+              <Share2 size={36} className="mx-auto text-indigo-400" />
+              <p className="text-base sm:text-lg font-bold text-white">Exporter la vidéo</p>
+              <div className="flex flex-col gap-2.5">
+                <button onClick={() => { shareVideo(); setShowExportMenu(false); }} className={`${modalBtn} bg-indigo-600 active:bg-indigo-700 text-white`}>
+                  <Share2 size={20} /> Partager (Drive, AirDrop...)
                 </button>
-                <button
-                  onClick={() => { shareByEmail(); setShowExportMenu(false); }}
-                  className="flex items-center justify-center gap-2 px-6 py-3 bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 text-white rounded-xl font-bold touch-manipulation min-h-[48px]"
-                >
-                  <Mail size={22} />
-                  Envoyer par email
+                <button onClick={() => { shareByEmail(); setShowExportMenu(false); }} className={`${modalBtn} bg-emerald-600 active:bg-emerald-700 text-white`}>
+                  <Mail size={20} /> Envoyer par email
                 </button>
-                <button
-                  onClick={async () => { await saveToFolder(); setShowExportMenu(false); }}
-                  className="flex items-center justify-center gap-2 px-6 py-3 bg-zinc-700 hover:bg-zinc-600 active:bg-zinc-800 text-white rounded-xl font-bold touch-manipulation min-h-[48px]"
-                >
-                  <FolderDown size={22} />
-                  Enregistrer sous...
+                <button onClick={async () => { await saveToFolder(); setShowExportMenu(false); }} className={`${modalBtn} bg-zinc-700 active:bg-zinc-800 text-white`}>
+                  <FolderDown size={20} /> Enregistrer sous...
                 </button>
-                <button
-                  onClick={() => setShowExportMenu(false)}
-                  className="px-6 py-3 bg-zinc-800 hover:bg-zinc-700 active:bg-zinc-600 text-zinc-400 rounded-xl font-bold touch-manipulation min-h-[48px]"
-                >
+                <button onClick={() => setShowExportMenu(false)} className={`${modalBtn} bg-zinc-800 active:bg-zinc-600 text-zinc-400`}>
                   Annuler
                 </button>
               </div>
@@ -545,116 +474,119 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({ id, title, settings, o
       </AnimatePresence>
 
       {/* Video Area */}
-      <div className="relative flex-1 overflow-hidden">
+      <div className="relative flex-1 overflow-hidden min-h-0">
         <video
           ref={videoRef}
           className="w-full h-full object-contain"
           playsInline
+          preload="auto"
+          style={isAndroid && mode === 'review'
+            // Caché derrière le canvas (toujours actif pour l'audio et les contrôles)
+            ? { position: 'absolute', opacity: 0, width: '100%', height: '100%' }
+            : { transform: 'translateZ(0)' }
+          }
           muted={mode === 'idle' || mode === 'recording'}
-          onEnded={() => {
-            setIsPlaying(false);
-            // Propose suppression après visionnage complet
-            if (mode === 'review') {
-              setShowDeleteConfirm(true);
-            }
-          }}
+          onEnded={() => { setIsPlaying(false); if (mode === 'review') setShowDeleteConfirm(true); }}
           onLoadedMetadata={() => {
-            if (videoRef.current) {
+            if (!videoRef.current) return;
+            if (videoRef.current.duration === Infinity || isNaN(videoRef.current.duration)) {
+              // Bug connu WebM/MediaRecorder : durée non écrite dans l'en-tête.
+              // Seeker à une position très loin force le navigateur à calculer la vraie durée.
+              videoRef.current.currentTime = 1e10;
+            } else {
               setDuration(videoRef.current.duration);
             }
           }}
-          onTimeUpdate={() => {
-            if (videoRef.current && !isPlaying) {
-              setProgress(videoRef.current.currentTime);
+          onDurationChange={() => {
+            if (!videoRef.current) return;
+            const d = videoRef.current.duration;
+            if (isFinite(d) && d > 0) {
+              setDuration(d);
             }
           }}
+          onSeeked={() => {
+            if (!videoRef.current) return;
+            const d = videoRef.current.duration;
+            if (isFinite(d) && d > 0 && videoRef.current.currentTime >= d - 1) {
+              setDuration(d);
+              videoRef.current.currentTime = 0;
+            }
+          }}
+          onTimeUpdate={() => { if (videoRef.current) setProgress(videoRef.current.currentTime); }}
         />
-
-        {/* Annotation Layer */}
+        {/* Canvas de rendu Android : dessine les frames via CPU pour éviter le bug GPU PowerVR */}
+        {isAndroid && (
+          <canvas
+            ref={canvasRef}
+            className="absolute inset-0"
+            style={{
+              display: mode === 'review' ? 'block' : 'none',
+              zIndex: 1,
+              pointerEvents: 'none', // Ne capture aucun événement tactile → annotations fonctionnelles
+            }}
+          />
+        )}
         {mode === 'review' && activeTool && (
-          <AnnotationCanvas
-            width={dimensions.width}
-            height={dimensions.height}
-            tool={activeTool}
-            color={activeColor}
-            annotations={annotations}
-            onAnnotationsChange={setAnnotations}
-          />
+          <AnnotationCanvas width={dimensions.width} height={dimensions.height} tool={activeTool} color={activeColor} annotations={annotations} onAnnotationsChange={setAnnotations} />
         )}
-
-        {/* Annotations display when no tool active */}
         {mode === 'review' && !activeTool && annotations.length > 0 && (
-          <AnnotationCanvas
-            width={dimensions.width}
-            height={dimensions.height}
-            tool={null}
-            color={activeColor}
-            annotations={annotations}
-            onAnnotationsChange={setAnnotations}
-            disabled
-          />
+          <AnnotationCanvas width={dimensions.width} height={dimensions.height} tool={null} color={activeColor} annotations={annotations} onAnnotationsChange={setAnnotations} disabled />
         )}
-
-        {/* Countdown Overlay */}
         <AnimatePresence>
           {isCountingDown && (
-            <motion.div
-              initial={{ scale: 0.5, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 1.5, opacity: 0 }}
-              className="absolute inset-0 flex items-center justify-center z-30 pointer-events-none"
-            >
-              <div className="text-9xl font-bold text-white drop-shadow-2xl">
-                {countdown}
-              </div>
+            <motion.div initial={{ scale: 0.5, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 1.5, opacity: 0 }}
+              className="absolute inset-0 flex items-center justify-center z-30 pointer-events-none">
+              <div className="text-7xl sm:text-9xl font-bold text-white drop-shadow-2xl">{countdown}</div>
             </motion.div>
           )}
         </AnimatePresence>
       </div>
 
-      {/* Progress Bar (review mode) */}
+      {/* Progress Bar with draggable thumb */}
       {mode === 'review' && duration > 0 && (
-        <div
-          ref={progressRef}
-          className="h-3 bg-zinc-800 cursor-pointer touch-manipulation relative z-20"
-          onClick={handleProgressClick}
-          onTouchStart={handleProgressClick}
-        >
-          <div
-            className="h-full bg-indigo-500 transition-none"
-            style={{ width: `${(progress / duration) * 100}%` }}
-          />
+        <div ref={progressRef}
+          className="relative h-8 sm:h-10 bg-zinc-900 cursor-pointer z-20 flex items-center select-none"
+          style={{ touchAction: 'none' }}
+          onMouseDown={handleScrubStart} onTouchStart={handleScrubStart}>
+          {/* Track background */}
+          <div className="absolute left-0 right-0 h-1.5 sm:h-2 bg-zinc-700 rounded-full mx-2" />
+          {/* Filled track */}
+          <div className="absolute left-0 h-1.5 sm:h-2 bg-indigo-500 rounded-full mx-2 transition-none"
+            style={{ width: `calc(${(progress / duration) * 100}% - 8px)` }} />
+          {/* Thumb */}
+          <div className="absolute h-5 w-5 sm:h-6 sm:w-6 bg-indigo-500 rounded-full border-2 border-white shadow-lg transition-none -translate-x-1/2 pointer-events-none"
+            style={{ left: `calc(8px + (100% - 16px) * ${progress / duration})` }} />
+          {/* Time tooltip on scrub */}
+          {isScrubbing && (
+            <div className="absolute -top-8 bg-zinc-800 text-white text-xs font-mono px-2 py-1 rounded -translate-x-1/2 pointer-events-none"
+              style={{ left: `calc(8px + (100% - 16px) * ${progress / duration})` }}>
+              {formatTime(progress)}
+            </div>
+          )}
         </div>
       )}
 
       {/* Controls */}
-      <div className="p-3 md:p-4 bg-zinc-900 border-t border-zinc-800 z-20">
-        {/* Recording Controls */}
+      <div className="shrink-0 p-2 sm:p-3 md:p-4 bg-zinc-900 border-t border-zinc-800 z-20">
+        {/* Recording */}
         {(mode === 'idle' || mode === 'recording') && (
-          <div className="flex items-center justify-center gap-3">
+          <div className="flex items-center justify-center gap-2 sm:gap-3">
             {mode === 'idle' && (
               <>
-                <button
-                  onClick={handleStartCapture}
-                  className="flex items-center gap-2 px-8 py-4 bg-red-600 hover:bg-red-500 active:bg-red-700 text-white rounded-xl font-bold transition-transform active:scale-95 touch-manipulation min-h-[56px] text-base"
-                >
-                  <Camera size={28} />
-                  ENREGISTRER
+                <button onClick={handleStartCapture}
+                  className="flex items-center gap-1.5 sm:gap-2 px-4 sm:px-8 py-3 sm:py-4 bg-red-600 active:bg-red-700 text-white rounded-xl font-bold active:scale-95 touch-manipulation min-h-[48px] text-sm sm:text-base">
+                  <Camera size={22} /> ENREGISTRER
                 </button>
-                <label className="flex items-center gap-2 px-8 py-4 bg-zinc-800 hover:bg-zinc-700 active:bg-zinc-600 text-white rounded-xl font-bold cursor-pointer transition-transform active:scale-95 touch-manipulation min-h-[56px] text-base">
-                  <Upload size={28} />
-                  GALERIE
+                <label className="flex items-center gap-1.5 sm:gap-2 px-4 sm:px-8 py-3 sm:py-4 bg-zinc-800 active:bg-zinc-600 text-white rounded-xl font-bold cursor-pointer active:scale-95 touch-manipulation min-h-[48px] text-sm sm:text-base">
+                  <Upload size={22} /> GALERIE
                   <input type="file" accept="video/*" onChange={handleFileUpload} className="hidden" />
                 </label>
               </>
             )}
             {mode === 'recording' && (
-              <button
-                onClick={stopRecording}
-                className="flex items-center gap-2 px-8 py-4 bg-white text-black rounded-xl font-bold animate-pulse transition-transform active:scale-95 touch-manipulation min-h-[56px] text-base"
-              >
-                <Square size={28} fill="black" />
-                ARRÊTER
+              <button onClick={stopRecording}
+                className="flex items-center gap-2 px-6 sm:px-8 py-3 sm:py-4 bg-white text-black rounded-xl font-bold animate-pulse active:scale-95 touch-manipulation min-h-[48px] text-sm sm:text-base">
+                <Square size={22} fill="black" /> ARRÊTER
               </button>
             )}
           </div>
@@ -662,66 +594,54 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({ id, title, settings, o
 
         {/* Review Controls */}
         {mode === 'review' && (
-          <div className="space-y-3">
-            {/* Playback controls row */}
-            <div className="flex items-center justify-between gap-2">
-              {/* Time display */}
-              <div className="text-xs md:text-sm text-zinc-400 font-mono min-w-[80px]">
-                {formatTime(progress)} / {formatTime(duration)}
+          <div className="space-y-2 sm:space-y-3">
+            {/* Row 1: Transport + Speed */}
+            <div className="flex items-center gap-1.5 sm:gap-2">
+              {/* Time */}
+              <div className="text-[10px] sm:text-xs text-zinc-500 font-mono shrink-0 w-[58px] sm:w-[80px]">
+                {formatTime(progress)}/{formatTime(duration)}
               </div>
 
-              {/* Center: transport controls */}
-              <div className="flex items-center gap-2 md:gap-3">
-                <button onClick={() => seekRelative(-5)} className="p-3 bg-zinc-800 rounded-xl hover:bg-zinc-700 active:bg-zinc-600 touch-manipulation min-w-[48px] min-h-[48px] flex items-center justify-center">
-                  <Rewind size={22} />
+              {/* Transport */}
+              <div className="flex items-center gap-1 sm:gap-2 justify-center flex-1">
+                <button onClick={() => seekRelative(-5)} className="p-2 sm:p-3 bg-zinc-800 rounded-lg sm:rounded-xl active:bg-zinc-600 touch-manipulation min-w-[40px] min-h-[40px] sm:min-w-[48px] sm:min-h-[48px] flex items-center justify-center">
+                  <Rewind size={18} />
                 </button>
-                <button onClick={() => seekRelative(-1)} className="p-3 bg-zinc-800 rounded-xl hover:bg-zinc-700 active:bg-zinc-600 touch-manipulation min-w-[48px] min-h-[48px] flex items-center justify-center">
-                  <SkipBack size={22} />
+                <button onClick={() => seekRelative(-1)} className="p-2 sm:p-3 bg-zinc-800 rounded-lg sm:rounded-xl active:bg-zinc-600 touch-manipulation min-w-[40px] min-h-[40px] sm:min-w-[48px] sm:min-h-[48px] flex items-center justify-center">
+                  <SkipBack size={18} />
                 </button>
-                <button
-                  onClick={togglePlay}
-                  className="w-14 h-14 md:w-16 md:h-16 flex items-center justify-center bg-indigo-600 hover:bg-indigo-500 active:bg-indigo-700 text-white rounded-full transition-transform active:scale-90 touch-manipulation"
-                >
-                  {isPlaying ? <Pause size={28} fill="white" /> : <Play size={28} fill="white" className="ml-0.5" />}
+                <button onClick={togglePlay}
+                  className="w-12 h-12 sm:w-14 sm:h-14 md:w-16 md:h-16 flex items-center justify-center bg-indigo-600 active:bg-indigo-700 text-white rounded-full active:scale-90 touch-manipulation">
+                  {isPlaying ? <Pause size={24} fill="white" /> : <Play size={24} fill="white" className="ml-0.5" />}
                 </button>
-                <button onClick={() => seekRelative(1)} className="p-3 bg-zinc-800 rounded-xl hover:bg-zinc-700 active:bg-zinc-600 touch-manipulation min-w-[48px] min-h-[48px] flex items-center justify-center">
-                  <SkipForward size={22} />
+                <button onClick={() => seekRelative(1)} className="p-2 sm:p-3 bg-zinc-800 rounded-lg sm:rounded-xl active:bg-zinc-600 touch-manipulation min-w-[40px] min-h-[40px] sm:min-w-[48px] sm:min-h-[48px] flex items-center justify-center">
+                  <SkipForward size={18} />
                 </button>
-                <button onClick={() => seekRelative(5)} className="p-3 bg-zinc-800 rounded-xl hover:bg-zinc-700 active:bg-zinc-600 touch-manipulation min-w-[48px] min-h-[48px] flex items-center justify-center">
-                  <FastForward size={22} />
+                <button onClick={() => seekRelative(5)} className="p-2 sm:p-3 bg-zinc-800 rounded-lg sm:rounded-xl active:bg-zinc-600 touch-manipulation min-w-[40px] min-h-[40px] sm:min-w-[48px] sm:min-h-[48px] flex items-center justify-center">
+                  <FastForward size={18} />
                 </button>
               </div>
 
-              {/* Speed selector */}
-              <div className="flex items-center gap-2">
-                <span className="text-[10px] text-zinc-500 font-bold uppercase tracking-wider hidden md:block">Vitesse</span>
-                <div className="flex gap-1">
-                  {PLAYBACK_SPEEDS.map(s => (
-                    <button
-                      key={s}
-                      onClick={() => setPlaybackSpeed(s)}
-                      className={`px-2 py-1.5 md:px-3 md:py-2 rounded-lg font-bold text-xs md:text-sm transition-colors touch-manipulation min-w-[40px] min-h-[36px] ${
-                        playbackSpeed === s
-                          ? 'bg-indigo-600 text-white'
-                          : 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700 active:bg-zinc-600'
-                      }`}
-                    >
-                      {s}x
-                    </button>
-                  ))}
-                </div>
+              {/* Speed - scrollable on small screens */}
+              <div className="flex gap-0.5 sm:gap-1 shrink-0 overflow-x-auto no-scrollbar">
+                {PLAYBACK_SPEEDS.map(s => (
+                  <button key={s} onClick={() => setPlaybackSpeed(s)}
+                    className={`px-1.5 sm:px-2.5 py-1 sm:py-1.5 rounded-md sm:rounded-lg font-bold text-[10px] sm:text-xs touch-manipulation min-w-[32px] sm:min-w-[38px] min-h-[30px] sm:min-h-[34px] ${
+                      playbackSpeed === s ? 'bg-indigo-600 text-white' : 'bg-zinc-800 text-zinc-400 active:bg-zinc-600'
+                    }`}>
+                    {s}x
+                  </button>
+                ))}
               </div>
             </div>
 
-            {/* Annotation tools row */}
-            <div className="flex items-center justify-between gap-2">
+            {/* Row 2: Colors + Tools — scrollable */}
+            <div className="flex items-center gap-2 overflow-x-auto no-scrollbar">
               {/* Colors */}
-              <div className="flex gap-1.5">
+              <div className="flex gap-1 shrink-0">
                 {COLORS.map(c => (
-                  <button
-                    key={c}
-                    onClick={() => setActiveColor(c)}
-                    className={`w-9 h-9 md:w-10 md:h-10 rounded-full border-2 transition-transform touch-manipulation ${
+                  <button key={c} onClick={() => setActiveColor(c)}
+                    className={`w-7 h-7 sm:w-9 sm:h-9 md:w-10 md:h-10 rounded-full border-2 touch-manipulation ${
                       activeColor === c ? 'scale-110 border-white' : 'border-transparent scale-90'
                     }`}
                     style={{ backgroundColor: c }}
@@ -729,26 +649,21 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({ id, title, settings, o
                 ))}
               </div>
 
+              <div className="w-px h-6 bg-zinc-700 shrink-0" />
+
               {/* Tools */}
-              <div className="flex gap-1">
+              <div className="flex gap-0.5 sm:gap-1 shrink-0">
                 {tools.map(t => (
-                  <button
-                    key={t.id}
-                    onClick={() => setActiveTool(activeTool === t.id ? null : t.id)}
-                    title={t.label}
-                    className={`p-2.5 md:p-3 rounded-lg transition-colors touch-manipulation min-w-[44px] min-h-[44px] flex items-center justify-center ${
-                      activeTool === t.id ? 'bg-indigo-600 text-white' : 'bg-zinc-800 hover:bg-zinc-700 active:bg-zinc-600 text-zinc-400'
-                    }`}
-                  >
-                    <t.icon size={22} />
+                  <button key={t.id} onClick={() => setActiveTool(activeTool === t.id ? null : t.id)} title={t.label}
+                    className={`p-2 sm:p-2.5 md:p-3 rounded-md sm:rounded-lg touch-manipulation min-w-[36px] min-h-[36px] sm:min-w-[44px] sm:min-h-[44px] flex items-center justify-center ${
+                      activeTool === t.id ? 'bg-indigo-600 text-white' : 'bg-zinc-800 active:bg-zinc-600 text-zinc-400'
+                    }`}>
+                    <t.icon size={18} />
                   </button>
                 ))}
-                <button
-                  onClick={() => setAnnotations([])}
-                  className="p-2.5 md:p-3 rounded-lg hover:bg-red-500/20 active:bg-red-500/30 text-red-500 touch-manipulation min-w-[44px] min-h-[44px] flex items-center justify-center"
-                  title="Effacer tout"
-                >
-                  <Eraser size={22} />
+                <button onClick={() => setAnnotations([])}
+                  className="p-2 sm:p-2.5 md:p-3 rounded-md sm:rounded-lg active:bg-red-500/30 text-red-500 touch-manipulation min-w-[36px] min-h-[36px] sm:min-w-[44px] sm:min-h-[44px] flex items-center justify-center">
+                  <Eraser size={18} />
                 </button>
               </div>
             </div>

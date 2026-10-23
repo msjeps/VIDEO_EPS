@@ -15,7 +15,6 @@
     touch-action: manipulation;
   }
 
-  /* Prevent pull-to-refresh on mobile */
   html, body {
     overscroll-behavior: none;
   }
@@ -29,7 +28,7 @@
   scrollbar-width: none;
 }
 
-/* Larger touch-friendly range sliders */
+/* Touch-friendly range sliders */
 input[type="range"] {
   -webkit-appearance: none;
   appearance: none;
@@ -57,11 +56,4 @@ input[type="range"]::-moz-range-thumb {
   background: #6366f1;
   cursor: pointer;
   border: 3px solid #fff;
-}
-
-/* Ensure safe area insets on notched devices */
-@supports (padding: env(safe-area-inset-bottom)) {
-  .safe-bottom {
-    padding-bottom: env(safe-area-inset-bottom);
-  }
 }
