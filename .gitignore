@@ -19,3 +19,13 @@ dist/
 build/
 coverage/
 *.log
+
+# Build artifacts (déployés par GitHub Actions)
+assets/
+VIDEO_EPS_GITHUB/
+
+# Fichiers publics (déjà dans public/, Vite les copie dans dist/)
+/icon_192.png
+/icon_512.png
+/sw.js
+/manifest.webmanifest
