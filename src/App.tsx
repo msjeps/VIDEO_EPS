@@ -21,6 +21,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { VideoPlayer } from './components/VideoPlayer';
 import { ViewMode, AppSettings } from './types';
 import { DEFAULT_SETTINGS, SETTINGS_STORAGE_KEY } from './constants';
+import { getAllVideos, clearAllVideos } from './db';
 
 function loadSettings(): AppSettings {
   try {
@@ -49,10 +50,22 @@ export default function App() {
   const [settings, setSettings] = useState<AppSettings>(loadSettings);
   const [showSettings, setShowSettings] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
+  const [orphanedCount, setOrphanedCount] = useState(0);
+
+  useEffect(() => {
+    getAllVideos().then((videos) => {
+      if (videos.length > 0) setOrphanedCount(videos.length);
+    }).catch(console.error);
+  }, []);
 
   useEffect(() => {
     persistSettings(settings);
   }, [settings]);
+
+  const clearOrphaned = async () => {
+    await clearAllVideos();
+    setOrphanedCount(0);
+  };
 
   const handleBack = () => setViewMode('home');
 
@@ -83,6 +96,18 @@ export default function App() {
           <Settings size={24} />
         </button>
       </header>
+
+      {/* Bandeau vidéos orphelines (session précédente interrompue) */}
+      {orphanedCount > 0 && (
+        <div className="shrink-0 px-3 sm:px-4 py-2 bg-amber-500/10 border-b border-amber-500/30 flex items-center justify-between gap-2">
+          <p className="text-xs sm:text-sm text-amber-200">
+            {orphanedCount} vidéo{orphanedCount > 1 ? 's' : ''} non supprimée{orphanedCount > 1 ? 's' : ''} (session précédente)
+          </p>
+          <button onClick={clearOrphaned} className="px-3 py-1.5 bg-amber-600 active:bg-amber-700 text-white text-xs font-bold rounded-lg touch-manipulation shrink-0">
+            Supprimer
+          </button>
+        </div>
+      )}
 
       {/* Main Content */}
       <main className="flex-1 relative overflow-hidden min-h-0">

@@ -323,6 +323,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({ id, title, settings, o
   };
 
   useEffect(() => { startCamera(); return () => stopCamera(); }, []);
+  useEffect(() => { return () => { if (videoUrl) URL.revokeObjectURL(videoUrl); }; }, [videoUrl]);
   useEffect(() => { if (videoRef.current) videoRef.current.playbackRate = playbackSpeed; }, [playbackSpeed]);
 
   // Sync dimensions canvas ↔ conteneur
