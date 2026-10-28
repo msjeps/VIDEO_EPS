@@ -84,9 +84,12 @@ export default function App() {
               <ChevronLeft size={24} />
             </button>
           )}
-          <h1 className="text-lg sm:text-xl md:text-2xl font-bold tracking-tight text-indigo-400">
-            Video <span className="text-white">EPS</span>
-          </h1>
+          <div>
+            <h1 className="text-lg sm:text-xl md:text-2xl font-bold tracking-tight text-indigo-400">
+              Video <span className="text-white">EPS</span>
+            </h1>
+            <p className="text-[10px] sm:text-xs text-zinc-500 leading-none">Version 1.0</p>
+          </div>
         </div>
 
         <button
@@ -397,9 +400,10 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* Footer credit */}
-                <div className="shrink-0 p-4 text-center">
-                  <p className="text-[11px] text-zinc-600">Nathalie Prenois</p>
+                {/* Footer outils-eps */}
+                <div className="shrink-0 p-4 border-t border-zinc-800 flex items-center justify-center gap-2.5">
+                  <img src={`${import.meta.env.BASE_URL}logo-outils-eps.png`} alt="Logo outils-eps.fr" className="w-9 h-9 rounded-lg shrink-0" />
+                  <p className="text-[11px] sm:text-xs text-zinc-500">https://outils-eps.fr par Nathalie Prenois</p>
                 </div>
               </motion.div>
             </>
