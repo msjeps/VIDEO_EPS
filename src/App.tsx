@@ -16,6 +16,7 @@ import {
   Gauge,
   Timer,
   Trash2,
+  Download,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { VideoPlayer } from './components/VideoPlayer';
@@ -382,6 +383,14 @@ export default function App() {
                                   <div>
                                     <p className="font-bold text-white">Mode Comparaison</p>
                                     <p className="text-zinc-400">Affichez deux vidéos côte à côte : une vidéo de référence et la performance de l'élève, pour comparer les mouvements en temps réel.</p>
+                                  </div>
+                                </div>
+
+                                <div className="flex gap-3 items-start">
+                                  <Download className="text-zinc-400 shrink-0 mt-0.5" size={18} />
+                                  <div>
+                                    <p className="font-bold text-white">Mise à jour de l'application</p>
+                                    <p className="text-zinc-400 break-all">Téléchargement de l'APK (Wi-Fi, avant le cours) : https://github.com/msjeps/VIDEO_EPS/releases/latest/download/VideoEPS.apk</p>
                                   </div>
                                 </div>
                               </div>

@@ -13,6 +13,8 @@ Permet de filmer les élèves, revoir leurs mouvements au ralenti, et annoter le
 - **Clone du dépôt public** : `~/Documents/APPLI EPS/APPLI EPS/video eps/`
 - **Clé de signature** : `videoepsv2-release.keystore` (SHA-256 : `9b9b0644add5e236223c7192b40f714a5adfdc27f8252a8a5645ec7d0f33b32f`), protégée par `keystore.properties` (git-ignoré). Ne jamais la mettre dans le dépôt.
 - **Web** : dépôt `msjeps/VIDEO_EPS` (GitHub Pages, `msjeps.github.io/VIDEO_EPS/`). Incrémenter `CACHE_NAME` de `sw.js` à chaque publication.
+- **Guide PDF** : `python3 generer-guide-video-eps.py` produit `video-eps.pdf` (version lue dans `src/App.tsx`, lien de l'APK et nom de fichier de la Release `latest`). À relancer et à relire (rendu) à chaque version. Nom de fichier fixe pour que le lien `releases/latest/download/video-eps.pdf` de la Release GitHub ne change jamais (voir convention dans le CLAUDE.md racine, section « Guides PDF »). Créé le 2026-11-10 ; joint à la Release `v1.0` le 2026-11-10. Lien permanent : `https://github.com/msjeps/VIDEO_EPS/releases/latest/download/video-eps.pdf`.
+- **Lien APK dans l'aide intégrée** : ajouté le 2026-11-10 dans le panneau « Aide & Fonctionnalités » de `src/App.tsx` (bloc « Mise à jour de l'application », texte brut non cliquable, testé en dev server). Corrige un écart constaté ce même jour (le CLAUDE.md racine affirmait à tort que ce lien existait depuis la Release `v1.0` du 2026-10-28).
 
 ## Architecture
 
@@ -50,7 +52,9 @@ EPSetVIDEO/
 │   └── app/src/main/AndroidManifest.xml  # allowBackup="false"
 ├── vite.config.ts              # Configuration Vite (pas de clé API exposée)
 ├── package.json                # Dépendances
-└── tsconfig.json               # Configuration TypeScript
+├── tsconfig.json               # Configuration TypeScript
+├── generer-guide-video-eps.py  # Génère video-eps.pdf (reportlab)
+└── video-eps.pdf                # Guide d'utilisation, 2 pages
 ```
 
 ### Fichiers clés
