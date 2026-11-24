@@ -1,9 +1,6 @@
-@import "tailwindcss";
-
-@theme {
-  --font-sans: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-  --font-mono: 'Courier New', monospace;
-}
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
 
 @layer base {
   body {
