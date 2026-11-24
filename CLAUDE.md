@@ -6,9 +6,9 @@ Permet de filmer les élèves, revoir leurs mouvements au ralenti, et annoter le
 
 ## Version et distribution
 
-- **Version** : 1.0 (versionCode 2, versionName "1.0")
+- **Version** : 1.1 (versionCode 3, versionName "1.1")
 - **Package Android** : `fr.eps.videoepsv2`
-- **Release GitHub** : [v1.0](https://github.com/msjeps/VIDEO_EPS/releases/tag/v1.0) — publiée le 2026-10-28
+- **Release GitHub** : [v1.1](https://github.com/msjeps/VIDEO_EPS/releases/tag/v1.1) — publiée le 2026-11-24 (migration Tailwind v4 → v3 pour compatibilité WebView ancien). Précédente : [v1.0](https://github.com/msjeps/VIDEO_EPS/releases/tag/v1.0) (2026-10-28)
 - **Lien de téléchargement permanent** : `https://github.com/msjeps/VIDEO_EPS/releases/latest/download/VideoEPS.apk`
 - **Clone du dépôt public** : `~/Documents/APPLI EPS/APPLI EPS/video eps/`
 - **Clé de signature** : `videoepsv2-release.keystore` (SHA-256 : `9b9b0644add5e236223c7192b40f714a5adfdc27f8252a8a5645ec7d0f33b32f`), protégée par `keystore.properties` (git-ignoré). Ne jamais la mettre dans le dépôt.
@@ -21,7 +21,7 @@ Permet de filmer les élèves, revoir leurs mouvements au ralenti, et annoter le
 ### Stack technique
 - **React 19** + **TypeScript** — composants fonctionnels, hooks
 - **Vite 6** — build & dev server
-- **Tailwind CSS 4** — styles utilitaires, thème sombre
+- **Tailwind CSS 3** — styles utilitaires via PostCSS (v4 incompatible avec le WebView figé des tablettes Lenovo)
 - **Konva / React-Konva** — canvas d'annotations (dessin vectoriel)
 - **Lucide React** — icônes
 - **Motion (Framer Motion)** — animations & transitions
