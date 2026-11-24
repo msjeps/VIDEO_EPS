@@ -89,7 +89,7 @@ export default function App() {
             <h1 className="text-lg sm:text-xl md:text-2xl font-bold tracking-tight text-indigo-400">
               Video <span className="text-white">EPS</span>
             </h1>
-            <p className="text-[10px] sm:text-xs text-zinc-500 leading-none">Version 1.0</p>
+            <p className="text-[10px] sm:text-xs text-zinc-500 leading-none">Version 1.1</p>
           </div>
         </div>
 

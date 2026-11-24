@@ -1,4 +1,4 @@
-const CACHE_NAME = 'video-eps-v4';
+const CACHE_NAME = 'video-eps-v5';
 
 // Install: activate immediately
 self.addEventListener('install', (event) => {
